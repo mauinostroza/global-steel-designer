@@ -1,1 +1,7 @@
-[theme]\nbase="light"\nprimaryColor="#0f2d46"\n
+[server]
+headless = true
+port = 8501
+
+[theme]
+base = "light"
+primaryColor = "#0f2d46"
