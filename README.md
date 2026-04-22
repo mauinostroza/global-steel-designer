@@ -1,1 +1,4 @@
-name,A,rx,ry,Zx,wt\nIPE 330,6260,137,33,714000,49.1\n
+# Global Steel Designer
+
+pip install -r requirements.txt
+streamlit run app.py
