@@ -1,90 +1,33 @@
-from __future__ import annotations
-from pathlib import Path
-import pandas as pd
-import plotly.graph_objects as go
-import streamlit as st
-from aisc360_master_engine_and_audit_v2 import MasterEngineV2, normative_gap_registry_v2
-from aisc360_engine_v8_warping_integrated import AngleMember, AngleSection, BlockShearInput, ChannelMember, ChannelSection, DesignMethod, EffectiveAreaInput, FlexureInput, IShapeMember, ISection, Material, MemberDemand, MemberLengths, ShearInput, Strictness, TeeMember, TeeSection
-from section_properties_calculator import IShapeDims, AngleDims, SectionPropertyCalculator
+# Rediseño UI — Global Steel Designer
 
-st.set_page_config(page_title="Global Steel Designer", layout="wide", initial_sidebar_state="expanded")
+> **Para Hermes:** Usar subagent-driven-development para implementar este plan.
 
-@st.cache_data
-def load_profiles():
-    return pd.read_csv(Path(__file__).with_name("profiles.csv"))
+**Goal:** Rediseño completo de la interfaz de `app.py` con layout 2-columnas, sistema visual profesional, inputs agrupados en secciones, y resultados mejorados con color-coding.
 
-def n_to_kn(x): return x/1000.0
-def nmm_to_knm(x): return x/1e6
-def inp(units, mv, iv, lm, li): return st.number_input(lm, value=mv) if units=="kN, mm, MPa" else st.number_input(li, value=iv)
-def conv(units, Fy, Fu, Lx, Ly, Lb, Pu, Tu, Mux, Muy, Vux, holes):
-    if units=="kip, in, ksi":
-        return {"Fy":Fy*6.89476,"Fu":Fu*6.89476,"Lx":Lx*25.4,"Ly":Ly*25.4,"Lb":Lb*25.4,"Pu":Pu*4448.22,"Tu":Tu*4448.22,"Mux":Mux*1.35582e6,"Muy":Muy*1.35582e6,"Vux":Vux*4448.22,"holes_area":holes*(25.4**2)}
-    return {"Fy":Fy,"Fu":Fu,"Lx":Lx,"Ly":Ly,"Lb":Lb,"Pu":Pu*1000.0,"Tu":Tu*1000.0,"Mux":Mux*1e6,"Muy":Muy*1e6,"Vux":Vux*1000.0,"holes_area":holes}
-def bundle_df(bundle, moment=False):
-    if bundle is None: return pd.DataFrame()
-    return pd.DataFrame([{"Equation":r.equation,"Description":r.description,"Capacity":nmm_to_knm(r.design_strength) if moment else n_to_kn(r.design_strength),"Demand":nmm_to_knm(r.demand) if moment else n_to_kn(r.demand),"Ratio":r.ratio} for r in bundle.results])
-def props_df(sec):
-    ks=["area","d","bf","b","tf","t","tw","Ix","Iy","rx","ry","Zx","Zy","Sx","Sy","J","Cw","ro","x_sc","y_sc"]
-    return pd.DataFrame([{"Property":k,"Value":getattr(sec,k)} for k in ks if hasattr(sec,k)])
+**Architecture:** Una sola columna izquierda (35%) con inputs agrupados en tarjetas expandibles + columna derecha (65%) con dashboard de resultados. Sidebar reducida a configuración esencial. CSS inline con paleta de ingeniería.
 
-def plot_section_sketch(sec, family_name):
-    """Draw a schematic cross-section using Plotly shapes."""
-    fig = go.Figure()
-    fig.update_layout(
-        height=300, showlegend=False,
-        xaxis=dict(visible=False), yaxis=dict(visible=False),
-        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-        margin=dict(l=10, r=10, t=10, b=10),
-    )
-    
-    d = getattr(sec, 'd', 300)
-    bf = getattr(sec, 'bf', 150) or getattr(sec, 'b', 150)
-    tf = getattr(sec, 'tf', 12) or getattr(sec, 't', 12)
-    tw = getattr(sec, 'tw', 8)
-    
-    if family_name in ("I Shape", "Tee"):
-        # Web
-        fig.add_shape(type="rect", x0=-tw/2, y0=tf if family_name=="Tee" else tf,
-                      x1=tw/2, y1=d-tf if family_name=="I Shape" else d,
-                      line=dict(color="#3182ce", width=1.5),
-                      fillcolor="#ebf4ff")
-        # Top flange
-        fig.add_shape(type="rect", x0=-bf/2, y0=d-tf,
-                      x1=bf/2, y1=d,
-                      line=dict(color="#3182ce", width=1.5),
-                      fillcolor="#bee3f8")
-        if family_name == "I Shape":
-            # Bottom flange
-            fig.add_shape(type="rect", x0=-bf/2, y0=0, x1=bf/2, y1=tf,
-                          line=dict(color="#3182ce", width=1.5),
-                          fillcolor="#bee3f8")
-    elif family_name == "Channel":
-        fig.add_shape(type="rect", x0=-tw/2, y0=tf, x1=tw/2, y1=d-tf,
-                      line=dict(color="#3182ce", width=1.5), fillcolor="#ebf4ff")
-        fig.add_shape(type="rect", x0=-bf+tw/2, y0=d-tf, x1=bf/2, y1=d,
-                      line=dict(color="#3182ce", width=1.5), fillcolor="#bee3f8")
-        fig.add_shape(type="rect", x0=-bf+tw/2, y0=0, x1=bf/2, y1=tf,
-                      line=dict(color="#3182ce", width=1.5), fillcolor="#bee3f8")
-    elif family_name == "Angle":
-        leg_w = tw if tw > 0 else bf * 0.15
-        fig.add_shape(type="rect", x0=-leg_w/2, y0=0, x1=leg_w/2, y1=d-tf,
-                      line=dict(color="#3182ce", width=1.5), fillcolor="#ebf4ff")
-        fig.add_shape(type="rect", x0=-leg_w/2, y0=d-tf, x1=bf, y1=d,
-                      line=dict(color="#3182ce", width=1.5), fillcolor="#bee3f8")
-    
-    # Centerline
-    fig.add_shape(type="line", x0=0, y0=-d*0.05, x1=0, y1=d*1.05,
-                  line=dict(color="#a0aec0", width=1, dash="dot"))
-    fig.add_annotation(x=bf*0.15, y=d*0.95, text="C.G.", showarrow=False,
-                       font=dict(size=9, color="#718096"))
-    
-    return fig
+**Tech Stack:** Streamlit, Plotly, Pandas (ya instalados). Solo se modifica `app.py`.
 
-df=load_profiles()
+---
 
-# ═══════════════════════════════════════════════════════════════
-# CSS — Professional Engineering Theme
-# ═══════════════════════════════════════════════════════════════
+### Tareas (6 tareas, archivo único app.py)
+
+#### Task 1: CSS y sistema visual
+
+**Objective:** Reemplazar el CSS actual con un tema profesional de ingeniería estructural.
+
+**File:** `app.py` (reemplazar bloque CSS en líneas ~30-31)
+
+**Implementación:**
+- Paleta principal: azul ingenieril `#1a365d`, acento naranja `#ed8936`, verde pass `#38a169`, rojo fail `#e53e3e`
+- Sidebar: gradiente oscuro `#0f1f38` → `#1a365d`
+- Cards: `.input-card` con borde izquierdo azul, fondo blanco, sombra sutil
+- Métricas: `.metric-card` con icono, valor grande, unidad pequeña, color condicional
+- Tablas: `.results-table` con filas alternadas, color D/C ratio condicional
+- Botón calcular: full-width, gradiente azul, texto blanco
+- Header: gradiente, título + subtítulo
+
+```python
 st.markdown("""
 <style>
 /* === SIDEBAR === */
@@ -147,7 +90,7 @@ div[data-testid="stButton"] > button:hover {
     box-shadow: 0 4px 12px rgba(49,130,206,0.3);
 }
 
-/* === TABLES === */
+/* === TABLAS === */
 [data-testid="stDataFrame"] {font-size: 0.82rem !important;}
 
 /* === FOOTER === */
@@ -158,10 +101,20 @@ div[data-testid="stButton"] > button:hover {
 }
 </style>
 """, unsafe_allow_html=True)
+```
 
-# ═══════════════════════════════════════════════════════════════
-# HEADER
-# ═══════════════════════════════════════════════════════════════
+#### Task 2: Header y sidebar simplificada
+
+**Objective:** Añadir header profesional y simplificar sidebar solo a configuración esencial.
+
+**File:** `app.py` (reemplazar st.sidebar actual ~líneas 32-38 y añadir header)
+
+**Implementación:**
+- Sidebar: título, units, engine mode, strictness. (Quitar Family y Source de sidebar — van al panel de inputs)
+- Header: `app-header` div con título "🌍 Global Steel Designer" + subtítulo "AISC 360-22 · LRFD · Master Engine v2 + v8"
+
+```python
+# ── HEADER ──
 st.markdown("""
 <div class="app-header">
   <h1>🌍 Global Steel Designer</h1>
@@ -170,9 +123,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ═══════════════════════════════════════════════════════════════
-# SIDEBAR — Settings only
-# ═══════════════════════════════════════════════════════════════
+# ── SIDEBAR ──
 with st.sidebar:
     st.markdown("## ⚙️ Settings")
     units = st.selectbox("Units", ["kN, mm, MPa", "kip, in, ksi"])
@@ -182,20 +133,55 @@ with st.sidebar:
     ) == "STRICT" else Strictness.PRACTICAL
     st.divider()
     st.caption("AISC 360-22 · LRFD · v2.0")
+```
 
-# ═══════════════════════════════════════════════════════════════
-# MAIN LAYOUT — 35% inputs | 65% results
-# ═══════════════════════════════════════════════════════════════
+#### Task 3: Panel de inputs agrupado en tarjetas
+
+**Objective:** Reorganizar todos los inputs en tarjetas colapsables con secciones lógicas.
+
+**File:** `app.py` (reemplazar líneas 40-90, el `left` column completo + mover Family/Source aquí)
+
+**Layout del panel izquierdo:**
+
+```
+┌─ GEOMETRÍA ──────────────────────────┐
+│ Family: [I Shape ▾]  Source: [Table ▾]│
+│ Section: [W18X35 ▾]                   │
+│ (o dims geométricas si Geometric)     │
+└───────────────────────────────────────┘
+┌─ MATERIAL ───────────────────────────┐
+│ Fy (MPa): [345]  Fu (MPa): [450]      │
+└───────────────────────────────────────┘
+┌─ LONGITUDES ─────────────────────────┐
+│ Lx: [6000]  Ly: [6000]  Lb: [3000]   │
+│ Kx: [1.0]  Ky: [1.0]  Cb: [1.0]     │
+└───────────────────────────────────────┘
+┌─ CARGAS ─────────────────────────────┐
+│ Pu: [150]  Tu: [0]  Mux: [250]       │
+│ Muy: [0]   Vux: [80]                 │
+│ U: [1.0]  Hole area: [0]             │
+└───────────────────────────────────────┘
+┌─ AVANZADO (colapsable) ──────────────┐
+│ a stiffeners, stiffeners checkbox,    │
+│ TFA checkbox, e_x, e_y,              │
+│ Block shear toggle + inputs          │
+│ Stem in tension checkbox             │
+└───────────────────────────────────────┘
+[       🧮 CALCULAR       ]
+```
+
+**Implementación con `st.expander` o `st.markdown` con secciones HTML:**
+Usar `st.markdown('<div class="input-card">...')` para cada sección, con título h3 y `st.columns` para campos en línea.
+
+```python
 left, right = st.columns([0.35, 0.65])
-
-# ── Initialize engine state ──
-err = None; result = None; section = None
 
 with left:
     # ── GEOMETRÍA ──
     st.markdown('<div class="input-card"><h3>📐 GEOMETRÍA</h3>', unsafe_allow_html=True)
     family = st.selectbox("Family", ["I Shape", "Channel", "Angle", "Tee"])
     source = st.selectbox("Source", ["Table", "Geometric"])
+    # ... section selection or geometric dims ...
     
     filters = {"I Shape": ["W","M","S","HP","IPE","IPN","HEA","HEB","HEM","IN","HN"],
                "Channel": ["C","MC"], "Tee": ["WT","MT","ST"], "Angle": []}
@@ -281,70 +267,33 @@ with left:
         else:
             block_vals = {"Avg": 0.0, "Avn": 0.0, "Atg": 0.0, "Atn": 0.0, "Ubs": 1.0}
     
-    # ── CALCULAR BUTTON ──
-    calc_clicked = st.button("🧮 CALCULAR", type="primary", use_container_width=True)
-    
-    if calc_clicked:
-        vals = conv(units, Fy, Fu, Lx, Ly, Lb, Pu, Tu, Mux, Muy, Vux, holes)
-        a_m = a*25.4 if units=="kip, in, ksi" else a
-        ex = eccx*25.4 if units=="kip, in, ksi" else eccx
-        ey = eccy*25.4 if units=="kip, in, ksi" else eccy
-        engine = MasterEngineV2(mode=engine_mode)
-        
-        try:
-            mat = Material(Fy=vals["Fy"], Fu=vals["Fu"])
-            lengths = MemberLengths(Lx=vals["Lx"], Ly=vals["Ly"], Lb=vals["Lb"], Kx=Kx, Ky=Ky)
-            demand = MemberDemand(Pu=vals["Pu"], Tu=vals["Tu"], Mux=vals["Mux"], Muy=vals["Muy"], Vux=vals["Vux"])
-            flex = FlexureInput(Cb=Cb, stem_in_tension=stem_in_tension, connection_eccentricity_x=ex, connection_eccentricity_y=ey)
-            eff = EffectiveAreaInput(U=U, holes_deduction_area=vals["holes_area"])
-            shear = ShearInput(a=a_m, stiffeners_present=stiff, tension_field_action=tfa)
-            block = BlockShearInput(**block_vals) if block_enabled else None
-            if family == "I Shape":
-                section = sec_in if sec_in is not None else ISection(name=str(row["name"]), area=float(row["A"]), d=float(row["d"]), bf=float(row.get("bf",0)), tf=float(row.get("tf",0)), tw=float(row.get("tw",0)), Ix=float(row.get("Ix",0)), Iy=float(row.get("Iy",0)), Zx=float(row.get("Zx",0)), Zy=float(row.get("Zy",0)), Sx=float(row.get("Sx",0)), Sy=float(row.get("Sy",0)), rx=float(row.get("rx",0)), ry=float(row.get("ry",0)), J=float(row.get("J",0)), Cw=float(row.get("Cw",0)), ro=float(row.get("ro",0)), rts=float(row.get("rts",0)))
-                result = engine.run_i_shape_member(IShapeMember(section=section, material=mat, lengths=lengths, method=DesignMethod.LRFD, strictness=strictness, flexure_input=flex, shear_input=shear, effective_area=eff, block_shear_input=block), demand)
-            elif family == "Channel":
-                section = ChannelSection(name=str(row["name"]), area=float(row["A"]), d=float(row["d"]), bf=float(row.get("bf",0)), tf=float(row.get("tf",0)), tw=float(row.get("tw",0)), Ix=float(row.get("Ix",0)), Iy=float(row.get("Iy",0)), Zx=float(row.get("Zx",0)), Zy=float(row.get("Zy",0)), Sx=float(row.get("Sx",0)), Sy=float(row.get("Sy",0)), rx=float(row.get("rx",0)), ry=float(row.get("ry",0)), J=float(row.get("J",0)), Cw=float(row.get("Cw",0)), ro=float(row.get("ro",0)))
-                result = engine.run_channel_member(ChannelMember(section=section, material=mat, lengths=lengths, method=DesignMethod.LRFD, strictness=strictness, flexure_input=flex, shear_input=shear, effective_area=eff, block_shear_input=block), demand)
-            elif family == "Angle":
-                section = AngleSection(name=sec_in.name, area=sec_in.area, d=sec_in.d, b=sec_in.bf, t=sec_in.tf, Ix=sec_in.Ix, Iy=sec_in.Iy, rx=sec_in.rx, ry=sec_in.ry, Sx=sec_in.Sx, Sy=sec_in.Sy, Zx=sec_in.Zx, Zy=sec_in.Zy)
-                result = engine.run_angle_member(AngleMember(section=section, material=mat, lengths=lengths, method=DesignMethod.LRFD, strictness=strictness, flexure_input=flex, effective_area=eff, block_shear_input=block), demand)
-            elif family == "Tee":
-                section = TeeSection(name=str(row["name"]), area=float(row["A"]), d=float(row["d"]), bf=float(row.get("bf",0)), tf=float(row.get("tf",0)), tw=float(row.get("tw",0)), Ix=float(row.get("Ix",0)), Iy=float(row.get("Iy",0)), Sx=float(row.get("Sx",0)), Sy=float(row.get("Sy",0)), Zx=float(row.get("Zx",0)), Zy=float(row.get("Zy",0)), rx=float(row.get("rx",0)), ry=float(row.get("ry",0)), J=float(row.get("J",0)), Cw=float(row.get("Cw",0)), ro=float(row.get("ro",0)))
-                result = engine.run_tee_member(TeeMember(section=section, material=mat, lengths=lengths, method=DesignMethod.LRFD, strictness=strictness, flexure_input=flex, effective_area=eff, block_shear_input=block), demand)
-        except Exception as e:
-            err = str(e)
-        
-        # Store in session state so right column can access after rerun
-        st.session_state["_calc_result"] = result
-        st.session_state["_calc_err"] = err
-        st.session_state["_calc_section"] = section
-        st.session_state["_calc_vals"] = vals
+    st.button("🧮 CALCULAR", type="primary", use_container_width=True)
+```
 
-# ── Restore from session state if available ──
-if "_calc_result" in st.session_state:
-    result = st.session_state["_calc_result"]
-    err = st.session_state["_calc_err"]
-    section = st.session_state["_calc_section"]
-    vals = st.session_state["_calc_vals"]
+#### Task 4: Panel de resultados con métricas mejoradas
 
-# ═══════════════════════════════════════════════════════════════
-# RIGHT COLUMN — Results Dashboard
-# ═══════════════════════════════════════════════════════════════
+**Objective:** Reemplazar las 4 métricas simples con KPI cards estilizadas y color-coding condicional.
+
+**File:** `app.py` (reemplazar líneas 122-165, el bloque `mid` + `right`)
+
+**Implementación:**
+- Columnas 2-column: métricas arriba, tabs abajo con color-coding en tablas
+- P-M diagram abajo de los tabs (ancho completo)
+- Tablas de resultados con ratio coloreado (verde ≤0.9, naranja 0.9-1.0, rojo >1.0)
+- Croquis de sección básico con Plotly
+
+```python
 with right:
     if err:
         st.error(f"❌ Error: {err}")
+        st.stop()
     elif result is not None:
         inter = result.get("interaction_ratio", 0.0)
         passed = inter <= 1.0
         
         # ── MÉTRICAS ──
         status_class = "pass" if passed else "fail"
-        if inter <= 0.9:
-            ratio_color = "#38a169"
-        elif inter <= 1.0:
-            ratio_color = "#ed8936"
-        else:
-            ratio_color = "#e53e3e"
+        ratio_color = "#38a169" if inter <= 0.9 else ("#ed8936" if inter <= 1.0 else "#e53e3e")
         
         st.markdown(f"""
         <div class="metric-row">
@@ -411,12 +360,6 @@ with right:
         
         with tabs[2]:
             st.json(result.get("geometry_source", {}))
-            st.markdown("**Section Sketch**")
-            try:
-                sketch = plot_section_sketch(section, family)
-                st.plotly_chart(sketch, use_container_width=True)
-            except Exception:
-                st.caption("(Sketch not available for this section type)")
         
         with tabs[3]:
             rows = [{"Family": i.family, "Chapter": i.chapter, "Description": i.description,
@@ -458,25 +401,118 @@ with right:
             st.markdown('<div class="input-card"><h3>📋 SECTION PROPERTIES</h3>', unsafe_allow_html=True)
             st.dataframe(props_df(section), hide_index=True, use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
-    else:
-        # Empty state
-        st.markdown("""
-        <div style="display:flex; align-items:center; justify-content:center; height:300px;
-                    border: 2px dashed #e2e8f0; border-radius: 12px; text-align: center; color: #a0aec0;">
-            <div>
-                <div style="font-size: 3rem; margin-bottom: 0.5rem;">📊</div>
-                <div style="font-size: 1rem; font-weight: 600;">Configure inputs and click Calculate</div>
-                <div style="font-size: 0.8rem; margin-top: 4px;">Results will appear here</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    
+    # ── FOOTER ──
+    st.markdown("""
+    <div class="app-footer">
+        Global Steel Designer v2.0 · AISC 360-22 · LRFD · Master Engine<br>
+        ⚠️ For engineering verification only. Not a substitute for professional judgment.
+    </div>
+    """, unsafe_allow_html=True)
+```
 
-# ═══════════════════════════════════════════════════════════════
-# FOOTER
-# ═══════════════════════════════════════════════════════════════
-st.markdown("""
-<div class="app-footer">
-    Global Steel Designer v2.0 · AISC 360-22 · LRFD · Master Engine<br>
-    ⚠️ For engineering verification only. Not a substitute for professional judgment.
-</div>
-""", unsafe_allow_html=True)
+#### Task 5: Añadir croquis de sección con Plotly
+
+**Objective:** Mostrar un croquis esquemático de la sección seleccionada usando Plotly shapes.
+
+**File:** `app.py` (añadir función `plot_section_sketch` y llamarla en results)
+
+**Implementación:**
+```python
+def plot_section_sketch(sec, family_name):
+    """Draw a schematic cross-section using Plotly shapes."""
+    fig = go.Figure()
+    fig.update_layout(
+        height=300, showlegend=False,
+        xaxis=dict(visible=False), yaxis=dict(visible=False),
+        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=10, r=10, t=10, b=10),
+    )
+    
+    d = getattr(sec, 'd', 300)
+    bf = getattr(sec, 'bf', 150)
+    tf = getattr(sec, 'tf', 12)
+    tw = getattr(sec, 'tw', 8)
+    
+    if family_name in ("I Shape", "Tee"):
+        # Web
+        fig.add_shape(type="rect", x0=-tw/2, y0=tf if family_name=="Tee" else tf,
+                      x1=tw/2, y1=d-tf if family_name=="I Shape" else d,
+                      line=dict(color="#3182ce", width=1.5),
+                      fillcolor="#ebf4ff")
+        # Top flange
+        fig.add_shape(type="rect", x0=-bf/2, y0=d-tf if family_name=="Tee" else d-tf,
+                      x1=bf/2, y1=d if family_name=="Tee" else d,
+                      line=dict(color="#3182ce", width=1.5),
+                      fillcolor="#bee3f8")
+        if family_name == "I Shape":
+            # Bottom flange
+            fig.add_shape(type="rect", x0=-bf/2, y0=0, x1=bf/2, y1=tf,
+                          line=dict(color="#3182ce", width=1.5),
+                          fillcolor="#bee3f8")
+    elif family_name == "Channel":
+        fig.add_shape(type="rect", x0=-tw/2, y0=tf, x1=tw/2, y1=d-tf,
+                      line=dict(color="#3182ce", width=1.5), fillcolor="#ebf4ff")
+        fig.add_shape(type="rect", x0=-bf+tw/2, y0=d-tf, x1=bf/2, y1=d,
+                      line=dict(color="#3182ce", width=1.5), fillcolor="#bee3f8")
+        fig.add_shape(type="rect", x0=-bf+tw/2, y0=0, x1=bf/2, y1=tf,
+                      line=dict(color="#3182ce", width=1.5), fillcolor="#bee3f8")
+    elif family_name == "Angle":
+        fig.add_shape(type="rect", x0=-tw/2, y0=0, x1=tw/2, y1=d-tf,
+                      line=dict(color="#3182ce", width=1.5), fillcolor="#ebf4ff")
+        fig.add_shape(type="rect", x0=-tw/2, y0=d-tf, x1=bf, y1=d,
+                      line=dict(color="#3182ce", width=1.5), fillcolor="#bee3f8")
+    
+    # Centerline
+    fig.add_shape(type="line", x0=0, y0=-d*0.05, x1=0, y1=d*1.05,
+                  line=dict(color="#a0aec0", width=1, dash="dot"))
+    fig.add_annotation(x=bf*0.15, y=d*0.95, text="C.G.", showarrow=False,
+                       font=dict(size=9, color="#718096"))
+    
+    return fig
+```
+
+Insertar en el results panel, en la sección de geometría:
+```python
+with tabs[2]:
+    st.json(result.get("geometry_source", {}))
+    st.markdown("**Section Sketch**")
+    sketch = plot_section_sketch(section, family)
+    st.plotly_chart(sketch, use_container_width=True)
+```
+
+#### Task 6: Configuración del tema
+
+**Objective:** Actualizar `.streamlit/config.toml` con tema más moderno.
+
+**File:** `.streamlit/config.toml`
+
+```toml
+[server]
+headless = true
+port = 8501
+
+[theme]
+base = "light"
+primaryColor = "#1a365d"
+backgroundColor = "#f7fafc"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#1a202c"
+font = "sans serif"
+```
+
+---
+
+### Verificación
+
+Después de todos los cambios:
+```bash
+cd global-steel-designer
+python3 -c "import py_compile; py_compile.compile('app.py', doraise=True)"
+streamlit run app.py  # verificar que inicia sin errores
+```
+
+### Notas
+- Los módulos de engine (aisc360_*) NO se modifican — solo app.py
+- Mantener compatibilidad con el engine existente — no cambiar firmas de función
+- El bloque `run` del botón se mantiene igual lógicamente, solo cambia el layout
