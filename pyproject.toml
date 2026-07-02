@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "steeldesigner"
+version = "1.0.0"
+description = "SteelDesigner — Diseño de secciones de acero AISC 360-22 (I, Canal, Tee, Ángulo, HSS)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.6",
+    "numpy>=1.26",
+    "scipy>=1.13",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.3",
+    "nuitka>=2.0",
+]
+sap2000 = [
+    "comtypes>=1.4",
+]
+
+[project.scripts]
+steeldesigner = "steeldesigner.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["steeldesigner*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short"
