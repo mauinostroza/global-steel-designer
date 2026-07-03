@@ -374,7 +374,7 @@ class EngineFacade:
 
         D = max(_safe(sec.d), 1e-6)           # altura total mm
         B = max(_safe(sec.bf), 1e-6)
-        t = max(_safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des_mm", None)) or _safe(getattr(sec, "t_nom_mm", None)), 1e-6)
+        t = max(_safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des", None)) or _safe(getattr(sec, "t_nom", None)), 1e-6)
         Zx = max(_safe(sec.Zx_mm3), 1e-6)
         Sx = max(_safe(sec.Sx_mm3), 1e-6)
         Iy = max(_safe(sec.Iy_mm4), 1e-6)
@@ -430,7 +430,7 @@ class EngineFacade:
         b = CheckBundle(name="Shear §G4")
 
         D = max(_safe(sec.d), 1e-6)
-        t = max(_safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des_mm", None)) or _safe(getattr(sec, "t_nom_mm", None)), 1e-6)
+        t = max(_safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des", None)) or _safe(getattr(sec, "t_nom", None)), 1e-6)
         h = D - 3.0 * t   # clear height of webs (§G4 uses h=clear height)
         h_t = h / t
         Aw = 2.0 * h * t   # two webs
@@ -462,7 +462,7 @@ class EngineFacade:
         b = CheckBundle(name="Flexure §F8")
 
         D = max(_safe(sec.d), 1e-6)
-        t = max(_safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des_mm", None)) or _safe(getattr(sec, "t_nom_mm", None)), 1e-6)
+        t = max(_safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des", None)) or _safe(getattr(sec, "t_nom", None)), 1e-6)
         Zx = max(_safe(sec.Zx_mm3), 1e-6)
         Sx = max(_safe(sec.Sx_mm3), 1e-6)
         D_t = D / t
@@ -499,7 +499,7 @@ class EngineFacade:
         b = CheckBundle(name="Shear §G6")
 
         D = max(_safe(sec.d), 1e-6)
-        t = max(_safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des_mm", None)) or _safe(getattr(sec, "t_nom_mm", None)), 1e-6)
+        t = max(_safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des", None)) or _safe(getattr(sec, "t_nom", None)), 1e-6)
         Ag = max(_safe(sec.area_mm2), 1e-6)
         D_t = D / t
 
@@ -561,7 +561,7 @@ class EngineFacade:
         if inp.Tu_torsion > 0:
             B = _safe(sec.bf)
             D = _safe(sec.d)
-            t = _safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des_mm", None))
+            t = _safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des", None))
             result.torsion = ChapterH3.hss_rectangular(
                 B=B, D=D, t=t, J=_safe(sec.J_mm4),
                 Tu=inp.Tu_torsion, Fy=inp.Fy, method=inp.method,
@@ -609,7 +609,7 @@ class EngineFacade:
 
         if inp.Tu_torsion > 0:
             D = _safe(sec.d)
-            t = _safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des_mm", None))
+            t = _safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des", None))
             result.torsion = ChapterH3.hss_circular(
                 D=D, t=t, J=_safe(sec.J_mm4),
                 Tu=inp.Tu_torsion, Fy=inp.Fy, E=inp.E,
