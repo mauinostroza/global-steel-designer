@@ -30,6 +30,10 @@ from steeldesigner.core.aisc360_engine import (
 from steeldesigner.core.aisc360_master_engine import MasterEngineV2
 from steeldesigner.core.angle_compression import check_angle
 from steeldesigner.core.torsion_chapter_h3 import ChapterH3, TorsionResult
+from steeldesigner.core.aisc360_engine import (
+    LimitStateResult, CheckBundle, Factors,
+)
+from math import sqrt, pi
 
 
 class _AngleCompressionBundle:
@@ -357,9 +361,165 @@ class EngineFacade:
         }
         return result
 
+    # ------------------------------------------------------------------
+    # HSS §F7 / §F8 / §G4 / §G6 — implementación directa AISC 360-22
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _hss_rect_flexure(sec: Section, Fy: float, E: float, Mux: float,
+                          method: str) -> CheckBundle:
+        """AISC §F7 — Flexión en HSS rectangular."""
+        p, o = Factors.phi_omega(method, "flexure")
+        b = CheckBundle(name="Flexure §F7")
+
+        D = max(_safe(sec.d), 1e-6)           # altura total mm
+        B = max(_safe(sec.bf), 1e-6)
+        t = max(_safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des_mm", None)) or _safe(getattr(sec, "t_nom_mm", None)), 1e-6)
+        Zx = max(_safe(sec.Zx_mm3), 1e-6)
+        Sx = max(_safe(sec.Sx_mm3), 1e-6)
+        Iy = max(_safe(sec.Iy_mm4), 1e-6)
+        A = max(_safe(sec.area_mm2), 1e-6)
+        ry = max(_safe(sec.ry_mm) or sqrt(Iy / A), 1e-6)
+
+        b_eff = B - 3.0 * t   # clear width of compression flange
+        h_tw = (D - 2 * t) / t
+
+        Mp = Fy * Zx
+
+        # Classify flanges (§F7.2 Table B4.1b, case 17)
+        lambda_f = b_eff / t
+        lambda_pf = 1.12 * sqrt(E / Fy)
+        lambda_rf = 1.40 * sqrt(E / Fy)
+
+        # Classify web (§F7.3 Table B4.1b, case 19)
+        lambda_w = h_tw
+        lambda_pw = 2.42 * sqrt(E / Fy)
+        lambda_rw = 5.70 * sqrt(E / Fy)
+
+        Mn = Mp  # start with plastic moment
+
+        # §F7.2 Flange local buckling
+        if lambda_f > lambda_pf and lambda_f <= lambda_rf:
+            Mn = min(Mn, Mp - (Mp - Fy * Sx) * (3.57 * lambda_f * sqrt(Fy / E) - 4.0))
+        elif lambda_f > lambda_rf:
+            be = min(B, 1.92 * t * sqrt(E / Fy) * (1.0 - 0.38 / lambda_f * sqrt(E / Fy)))
+            Seff = Sx * (be / B) if B > 0 else Sx
+            Mn = min(Mn, Fy * Seff)
+
+        # §F7.3 Web local buckling
+        if lambda_w > lambda_pw and lambda_w <= lambda_rw:
+            Mn = min(Mn, Mp - (Mp - Fy * Sx) * (0.305 * lambda_w * sqrt(Fy / E) - 0.738))
+        elif lambda_w > lambda_rw:
+            Mn = min(Mn, Fy * Sx)
+
+        Mn = max(Mn, 0.0)
+        s = p * Mn / o
+        b.results.append(LimitStateResult(
+            "F", "F7", "Rect HSS flexure §F7", Mn, s, p, o, Mux,
+            abs(Mux) / s if s > 0 else 0.0,
+            {"b_eff/t": lambda_f, "lambda_pf": lambda_pf, "lambda_rf": lambda_rf,
+             "h/t": lambda_w, "Mp_Nmm": Mp},
+        ))
+        return b
+
+    @staticmethod
+    def _hss_rect_shear(sec: Section, Fy: float, E: float, Vux: float,
+                        method: str) -> CheckBundle:
+        """AISC §G4 — Cortante en HSS rectangular (2 almas verticales)."""
+        p, o = Factors.phi_omega(method, "shear")
+        b = CheckBundle(name="Shear §G4")
+
+        D = max(_safe(sec.d), 1e-6)
+        t = max(_safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des_mm", None)) or _safe(getattr(sec, "t_nom_mm", None)), 1e-6)
+        h = D - 3.0 * t   # clear height of webs (§G4 uses h=clear height)
+        h_t = h / t
+        Aw = 2.0 * h * t   # two webs
+
+        kv = 5.0   # §G4 — no transverse stiffeners
+        limit_1 = 1.10 * sqrt(kv * E / Fy)
+        limit_2 = 1.37 * sqrt(kv * E / Fy)
+        if h_t <= limit_1:
+            Cv2 = 1.0
+        elif h_t <= limit_2:
+            Cv2 = limit_1 / h_t
+        else:
+            Cv2 = 1.51 * kv * E / (h_t ** 2 * Fy)
+
+        Vn = 0.6 * Fy * Aw * Cv2
+        s = p * Vn / o
+        b.results.append(LimitStateResult(
+            "G", "G4", "Rect HSS shear §G4", Vn, s, p, o, Vux,
+            abs(Vux) / s if s > 0 else 0.0,
+            {"Aw_mm2": Aw, "Cv2": Cv2, "h/t": h_t, "kv": kv},
+        ))
+        return b
+
+    @staticmethod
+    def _hss_circ_flexure(sec: Section, Fy: float, E: float, Mux: float,
+                          method: str) -> CheckBundle:
+        """AISC §F8 — Flexión en HSS circular (tubo redondo / pipe)."""
+        p, o = Factors.phi_omega(method, "flexure")
+        b = CheckBundle(name="Flexure §F8")
+
+        D = max(_safe(sec.d), 1e-6)
+        t = max(_safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des_mm", None)) or _safe(getattr(sec, "t_nom_mm", None)), 1e-6)
+        Zx = max(_safe(sec.Zx_mm3), 1e-6)
+        Sx = max(_safe(sec.Sx_mm3), 1e-6)
+        D_t = D / t
+
+        # §F8.2 limits (Table B4.1b case 20)
+        lambda_p = 0.07 * E / Fy
+        lambda_r = 0.31 * E / Fy
+
+        if D_t <= lambda_p:
+            Mn = Fy * Zx        # compact — plastic
+            eq = "F8-1"
+        elif D_t <= lambda_r:
+            Mn = (0.021 * E / D_t + Fy) * Sx   # noncompact
+            eq = "F8-2"
+        else:
+            Fcr = 0.33 * E / D_t               # slender
+            Mn = Fcr * Sx
+            eq = "F8-3"
+
+        Mn = min(Mn, Fy * Zx)  # cap at Mp
+        s = p * Mn / o
+        b.results.append(LimitStateResult(
+            "F", eq, "Round HSS/pipe flexure §F8", Mn, s, p, o, Mux,
+            abs(Mux) / s if s > 0 else 0.0,
+            {"D/t": D_t, "lambda_p": lambda_p, "lambda_r": lambda_r},
+        ))
+        return b
+
+    @staticmethod
+    def _hss_circ_shear(sec: Section, Fy: float, E: float, Vux: float,
+                        method: str) -> CheckBundle:
+        """AISC §G6 — Cortante en HSS circular."""
+        p, o = Factors.phi_omega(method, "shear")
+        b = CheckBundle(name="Shear §G6")
+
+        D = max(_safe(sec.d), 1e-6)
+        t = max(_safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des_mm", None)) or _safe(getattr(sec, "t_nom_mm", None)), 1e-6)
+        Ag = max(_safe(sec.area_mm2), 1e-6)
+        D_t = D / t
+
+        # §G6 — Fcr is greater of the two expressions, Table G6-1
+        Fcr_a = 1.60 * E / (sqrt(max(_safe(getattr(sec, "Lx_mm", None)) or D, D)) * (D_t) ** (5.0 / 4.0))
+        Fcr_b = 0.78 * E / (D_t ** (3.0 / 2.0))
+        Fcr = max(Fcr_a, Fcr_b, 0.6 * Fy)
+        Fcr = min(Fcr, 0.6 * Fy)   # §G6: Fcr ≤ 0.6Fy
+        Vn = Fcr * Ag / 2.0
+        s = p * Vn / o
+        b.results.append(LimitStateResult(
+            "G", "G6", "Round HSS shear §G6", Vn, s, p, o, Vux,
+            abs(Vux) / s if s > 0 else 0.0,
+            {"Fcr": Fcr, "D/t": D_t, "Ag_mm2": Ag},
+        ))
+        return b
+
     def _run_hss_rect(self, sec: Section, inp: DesignInputs, name: str) -> DesignResult:
-        """HSS rectangular: compresión §E7 + torsión §H3.1."""
-        # Usar motor I como aproximación (mismos caps D/E/F/G)
+        """HSS rectangular: §E7 compresión + §F7 flexión + §G4 cortante + §H3.1 torsión."""
+        # Compresión §E7 via motor I-shape (misma formulación columna)
         isec = to_isection(sec)
         engine = MasterEngineV2(mode=inp.engine_mode)
         member = IShapeMember(
@@ -374,22 +534,34 @@ class EngineFacade:
         )
         raw = engine.run_i_shape_member(member, self._demand(inp))
 
+        # §F7 y §G4 reemplazan los resultados de flexión/cortante del motor I
+        flexure = self._hss_rect_flexure(sec, inp.Fy, inp.E, inp.Mux, inp.method)
+        shear = self._hss_rect_shear(sec, inp.Fy, inp.E, inp.Vux, inp.method)
+
+        # Recalcular interacción §H1-1 con los valores correctos §F7/§G4
+        comp = raw.get("compression")
+        phi_Pc = getattr(comp, "controlling", None)
+        phi_Pc = phi_Pc.design_strength if phi_Pc else 0.0
+        phi_Mcx = flexure.controlling.design_strength if flexure.controlling else 0.0
+        from steeldesigner.core.aisc360_engine import ChapterH
+        ir = ChapterH.h1_1(inp.Pu, phi_Pc, inp.Mux, phi_Mcx) if (phi_Pc or phi_Mcx) else 0.0
+
         result = DesignResult(
             section_name=name, family_type="hss_rect", method=inp.method,
             tension=raw.get("tension"),
-            compression=raw.get("compression"),
-            flexure_major=raw.get("flexure_major"),
-            shear=raw.get("shear_major"),
-            interaction_ratio=raw.get("interaction_ratio", 0.0),
-            passes_interaction=raw.get("passes_interaction", True),
+            compression=comp,
+            flexure_major=flexure,
+            shear=shear,
+            interaction_ratio=ir,
+            passes_interaction=ir <= 1.0,
             geometry_source=raw.get("geometry_source", {}),
             audit_report=raw.get("audit_report"),
         )
 
         if inp.Tu_torsion > 0:
-            B = _safe(sec.bf) or _safe(sec.B)
+            B = _safe(sec.bf)
             D = _safe(sec.d)
-            t = _safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des", None))
+            t = _safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des_mm", None))
             result.torsion = ChapterH3.hss_rectangular(
                 B=B, D=D, t=t, J=_safe(sec.J_mm4),
                 Tu=inp.Tu_torsion, Fy=inp.Fy, method=inp.method,
@@ -397,7 +569,7 @@ class EngineFacade:
         return result
 
     def _run_hss_circ(self, sec: Section, inp: DesignInputs, name: str) -> DesignResult:
-        """HSS circular: compresión §E7 + torsión §H3.1."""
+        """HSS circular: §E7 compresión + §F8 flexión + §G6 cortante + §H3.1 torsión."""
         isec = to_isection(sec)
         engine = MasterEngineV2(mode=inp.engine_mode)
         member = IShapeMember(
@@ -412,21 +584,32 @@ class EngineFacade:
         )
         raw = engine.run_i_shape_member(member, self._demand(inp))
 
+        # §F8 y §G6 reemplazan los resultados de flexión/cortante del motor I
+        flexure = self._hss_circ_flexure(sec, inp.Fy, inp.E, inp.Mux, inp.method)
+        shear = self._hss_circ_shear(sec, inp.Fy, inp.E, inp.Vux, inp.method)
+
+        comp = raw.get("compression")
+        phi_Pc = getattr(comp, "controlling", None)
+        phi_Pc = phi_Pc.design_strength if phi_Pc else 0.0
+        phi_Mcx = flexure.controlling.design_strength if flexure.controlling else 0.0
+        from steeldesigner.core.aisc360_engine import ChapterH
+        ir = ChapterH.h1_1(inp.Pu, phi_Pc, inp.Mux, phi_Mcx) if (phi_Pc or phi_Mcx) else 0.0
+
         result = DesignResult(
             section_name=name, family_type="hss_circ", method=inp.method,
             tension=raw.get("tension"),
-            compression=raw.get("compression"),
-            flexure_major=raw.get("flexure_major"),
-            shear=raw.get("shear_major"),
-            interaction_ratio=raw.get("interaction_ratio", 0.0),
-            passes_interaction=raw.get("passes_interaction", True),
+            compression=comp,
+            flexure_major=flexure,
+            shear=shear,
+            interaction_ratio=ir,
+            passes_interaction=ir <= 1.0,
             geometry_source=raw.get("geometry_source", {}),
             audit_report=raw.get("audit_report"),
         )
 
         if inp.Tu_torsion > 0:
             D = _safe(sec.d)
-            t = _safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des", None))
+            t = _safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des_mm", None))
             result.torsion = ChapterH3.hss_circular(
                 D=D, t=t, J=_safe(sec.J_mm4),
                 Tu=inp.Tu_torsion, Fy=inp.Fy, E=inp.E,
