@@ -49,7 +49,7 @@ class ResultsPage(QWidget):
 
         # Tabla de resultados
         self._results_table = QTableWidget()
-        self._results_table.setColumnCount(13)
+        self._results_table.setColumnCount(12)
         self._results_table.setHorizontalHeaderLabels([
             "#", "Perfil", "L (mm)", "Pu (kN)", "φPn (kN)",
             "Ratio D/C", "(KL/r)eff", "(KL/r)design", "Fcr (MPa)", "Modo", "Conexión", "Estado",

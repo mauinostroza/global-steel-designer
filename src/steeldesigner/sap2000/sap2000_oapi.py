@@ -326,22 +326,22 @@ class AngleReader:
 
     def get_section_props(self, section_name: str) -> dict | None:
         """Obtiene propiedades de una sección de catálogo por nombre."""
-        from sap2000_angles.core.catalogue import find_by_designation, search
-
-        # Intentar búsqueda directa
-        desig = section_name.replace(" ", "").upper()
-        if not desig.startswith("L"):
-            desig = "L" + desig
-
-        p = find_by_designation(desig)
-        if p:
-            return {"b1": p.b1, "b2": p.b2, "t": p.t, "designation": p.designation}
-
-        # Búsqueda parcial
-        results = search(desig)
-        if results:
-            p = results[0]
-            return {"b1": p.b1, "b2": p.b2, "t": p.t, "designation": p.designation}
+        # Buscar en el catálogo interno (SQLite)
+        try:
+            from steeldesigner.catalog.catalog import Catalog
+            from steeldesigner.core.section_adapter import to_angle_args
+            cat = Catalog.shared()
+            results = cat.fts_search(section_name, limit=5)
+            for sec in results:
+                fam = sec.family.family_code if sec.family else ""
+                if fam in ("L_ICHA_LAM", "L_ICHA_PLEG", "L_AISC", "L"):
+                    args = to_angle_args(sec)
+                    return {
+                        "b1": args["b1"], "b2": args["b2"], "t": args["t"],
+                        "designation": sec.designation_modern or sec.designation_legacy or section_name,
+                    }
+        except Exception:
+            pass
 
         # Leer propiedades desde SAP2000 directamente
         return self._read_section_from_sap(section_name)
@@ -753,19 +753,23 @@ class AngleService:
         if data is None:
             return None
 
-        from sap2000_angles.core.angle_compression import (
-            section_props,
-            compute_capacity,
-            build_calc_steps,
+        from steeldesigner.core.angle_compression import check_angle
+
+        # Compresión §E5 usando motor interno
+        b1, b2 = (data.b1, data.b2) if data.b1 >= data.b2 else (data.b2, data.b1)
+        comp = check_angle(
+            b1=b1, b2=b2, t=data.t,
+            L=data.length_mm,
+            Pu=data.Pu_comp_max,  # ya en kN
+            Fy=data.Fy_MPa, E=data.E_MPa,
+            conn_leg=data.conn_leg,
+            method=self._method,
         )
 
-        # Calcular propiedades de la sección y capacidad (fórmula única,
-        # sin duplicar el cálculo de (KL/r)eff aquí).
-        sec = section_props(data.b1, data.b2, data.t, data.Fy_MPa, data.E_MPa)
-        cap = compute_capacity(sec, data.length_mm, data.conn_leg, data.Fy_MPa, data.E_MPa, method=self._method)
-
-        phiPn_kN = cap.phiPn / 1000
-        K_calc = cap.KLr_eff / cap.L_r if cap.L_r > 0 else 1.0
+        phiPn_kN = comp.get("phiPn", 0.0)
+        KLr_eff = comp.get("KLr_eff", 0.0)
+        KLr_design = comp.get("KLr_design", KLr_eff)
+        K_calc = KLr_eff / (data.length_mm / comp.get("r", 1.0)) if comp.get("r", 0) > 0 else 1.0
 
         ratio_comp = data.Pu_comp_max / phiPn_kN if phiPn_kN > 0 else None
         ratio_tens = data.Pu_tens_max / phiPn_kN if phiPn_kN > 0 else None
@@ -784,14 +788,14 @@ class AngleService:
 
         written = self._writer.set_K_factor(frame_name, k_strong_new, k_weak_new)
 
-        calc_steps = build_calc_steps(sec, cap, data.Pu_comp_max, data.Fy_MPa, data.E_MPa)
+        calc_steps = comp.get("calc_steps", [])
 
         return KFactorResult(
             element=frame_name,
             section=data.section_name,
             L_mm=data.length_mm,
             conn_leg=data.conn_leg,
-            KLr_eff=round(cap.KLr_eff, 2),
+            KLr_eff=round(KLr_eff, 2),
             K_calculated=round(K_calc, 4),
             K_strong_old=round(data.K_strong_current, 4),
             K_weak_old=round(data.K_weak_current, 4),

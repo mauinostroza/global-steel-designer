@@ -32,6 +32,19 @@ from steeldesigner.core.angle_compression import check_angle
 from steeldesigner.core.torsion_chapter_h3 import ChapterH3, TorsionResult
 
 
+class _AngleCompressionBundle:
+    """Wrapper liviano para exponer resultado §E5 como objeto compatible con la UI."""
+    def __init__(self, comp: dict):
+        phi_pn_kn = comp.get("phiPn_kN") or comp.get("phiPn")
+        self.phi_Pn = phi_pn_kn * 1000.0 if phi_pn_kn is not None else None  # kN → N
+        self.ratio = comp.get("ratio", 0.0)
+        self.limit_states = []  # tabla de verificaciones vacía para UI genérica
+        self._raw = comp
+
+    def __repr__(self):
+        return f"<AngleCompression φPn={self.phi_Pn} ratio={self.ratio}>"
+
+
 @dataclass
 class DesignInputs:
     """Parámetros de diseño pasados al facade."""
@@ -324,7 +337,7 @@ class EngineFacade:
         result = DesignResult(
             section_name=name, family_type="angle", method=inp.method,
             tension=raw.get("tension"),
-            compression=None,  # reemplazado por §E5
+            compression=_AngleCompressionBundle(comp_result),
             flexure_major=raw.get("flexure") or raw.get("flexure_major"),
             shear=raw.get("shear") or raw.get("shear_major"),
             interaction_ratio=raw.get("interaction_ratio", 0.0),

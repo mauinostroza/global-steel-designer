@@ -3,8 +3,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from math import pi, sqrt
 from typing import Any, Dict, List, Optional
-from aisc360_b4_section_classification import B4Classifier, Material as B4Material, IShapeInput, ChannelInput, AngleInput, TeeInput, SectionClass
-from section_warping_and_shear_center import PropertyReliability, SectionWarpingShearCenter, IShapeDims as WarpIShapeDims, ChannelDims as WarpChannelDims, TeeDims as WarpTeeDims, AngleDims as WarpAngleDims
+from steeldesigner.core.aisc360_b4_classification import B4Classifier, Material as B4Material, IShapeInput, ChannelInput, AngleInput, TeeInput, SectionClass
+from steeldesigner.core.section_warping import PropertyReliability, SectionWarpingShearCenter, IShapeDims as WarpIShapeDims, ChannelDims as WarpChannelDims, TeeDims as WarpTeeDims, AngleDims as WarpAngleDims
 
 E_MPA = 200000.0
 G_MPA = 77200.0

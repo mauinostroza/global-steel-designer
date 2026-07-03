@@ -102,6 +102,7 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(self._catalogue_page)
 
         self._design_page = DesignPage()
+        self._design_page.result_computed.connect(self._on_result_computed)
         self._stack.addWidget(self._design_page)
 
         self._results_page = ResultsPage()
@@ -128,3 +129,28 @@ class MainWindow(QMainWindow):
         self._switch(1)
         name = section.designation_modern or section.designation_legacy
         self._status_msg.setText(f"Perfil cargado: {name}")
+
+    def _on_result_computed(self, result):
+        """Convierte DesignResult al dict que ResultsPage.add_result() espera."""
+        comp = result.compression
+        phi_pn = getattr(comp, "phi_Pn", None)
+        ratio = getattr(comp, "ratio", None) or result.interaction_ratio
+
+        row = {
+            "section": result.section_name,
+            "family": result.family_type,
+            "method": result.method,
+            "Pu_kN": 0.0,
+            "phiPn_kN": phi_pn / 1000.0 if phi_pn else 0.0,
+            "ratio": ratio,
+            "ok": result.interaction_ratio <= 1.0,
+            "reserve_pct": max(0.0, (1.0 - result.interaction_ratio) * 100),
+            "deficit_pct": max(0.0, (result.interaction_ratio - 1.0) * 100),
+            "(KL/r)eff": result.geometry_source.get("angle_e5", {}).get("KLr_eff", 0.0) if result.geometry_source else 0.0,
+            "(KL/r)design": result.geometry_source.get("angle_e5", {}).get("KLr_design", 0.0) if result.geometry_source else 0.0,
+            "Fcr_MPa": result.geometry_source.get("angle_e5", {}).get("Fcr_MPa", 0.0) if result.geometry_source else 0.0,
+            "mode": result.geometry_source.get("angle_e5", {}).get("mode", result.family_type) if result.geometry_source else result.family_type,
+            "conn_leg": "—",
+        }
+        self._results_page.add_result(row)
+        self._status_msg.setText(f"Calculado: {result.section_name} — D/C = {result.interaction_ratio:.3f}")

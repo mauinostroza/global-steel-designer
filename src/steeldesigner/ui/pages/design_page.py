@@ -101,6 +101,8 @@ _FACADE = EngineFacade()
 class DesignPage(QWidget):
     """Pantalla de diseño AISC 360-22."""
 
+    result_computed = Signal(object)   # emite DesignResult tras cada cálculo exitoso
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._section = None
@@ -221,10 +223,12 @@ class DesignPage(QWidget):
         self._spin_Mux = self._spin(0, 99999, 0, " kN·m")
         self._spin_Muy = self._spin(0, 99999, 0, " kN·m")
         self._spin_Vux = self._spin(0, 99999, 0, " kN")
+        self._spin_Vuy = self._spin(0, 99999, 0, " kN")
         df.addRow("Pu (+ tracción):", self._spin_Pu)
         df.addRow("Mux:", self._spin_Mux)
         df.addRow("Muy:", self._spin_Muy)
         df.addRow("Vux:", self._spin_Vux)
+        df.addRow("Vuy:", self._spin_Vuy)
         lv.addWidget(dem_grp)
 
         tor_grp = QGroupBox("Torsión §H3")
@@ -237,12 +241,19 @@ class DesignPage(QWidget):
         tf.addRow("L (torsión):", self._spin_L_tor)
         lv.addWidget(tor_grp)
 
-        self._spin_Cb = self._spin(1.0, 3.0, 1.0, "", decimals=2)
-        cb_grp = QGroupBox("Flexión")
+        cb_grp = QGroupBox("Flexión / Opciones")
         cb_grp.setStyleSheet(_GRP)
         cbf = QFormLayout(cb_grp)
         cbf.setSpacing(6)
+        self._spin_Cb = self._spin(1.0, 3.0, 1.0, "", decimals=2)
         cbf.addRow("Cb:", self._spin_Cb)
+        self._chk_stem_tension = QCheckBox("Vástago en tracción (Tees §F9)")
+        self._chk_stem_tension.setChecked(True)
+        cbf.addRow(self._chk_stem_tension)
+        self._chk_stiffeners = QCheckBox("Rigidizadores transversales (§G2)")
+        cbf.addRow(self._chk_stiffeners)
+        self._chk_tension_field = QCheckBox("Campo de tracción permitido (§G3)")
+        cbf.addRow(self._chk_tension_field)
         lv.addWidget(cb_grp)
 
         # calculate button
@@ -415,7 +426,7 @@ class DesignPage(QWidget):
             if k in ("Designation", "Family"):
                 continue
             lines.append(f"{k}: {v:,.1f}" if isinstance(v, float) else f"{k}: {v}")
-        self._sec_info.setText("<br>".join(lines[:10]))  # truncate for space
+        self._sec_info.setText("<br>".join(lines))
         self._detail_label.setText("<br>".join(lines))
 
     # ── compute ──────────────────────────────────────────────────────────────
@@ -441,6 +452,9 @@ class DesignPage(QWidget):
             Tu_torsion=self._spin_Tu.value() * 1e6, # kN·m → N·mm
             L_torsion=self._spin_L_tor.value(),
             Cb=self._spin_Cb.value(),
+            stem_in_tension=self._chk_stem_tension.isChecked(),
+            stiffeners=self._chk_stiffeners.isChecked(),
+            tension_field=self._chk_tension_field.isChecked(),
             method=method,
         )
 
@@ -454,20 +468,12 @@ class DesignPage(QWidget):
             )
             self._btn_csv.setEnabled(True)
             self._btn_html.setEnabled(True)
+            self.result_computed.emit(result)
         except Exception as exc:
             self._status.set_status("error", f"Error: {exc}")
             QMessageBox.critical(self, "Error de cálculo", str(exc))
 
     def _populate_results(self, result):
-        # Metric cards
-        def fmt_cap(bundle, attr):
-            if bundle is None:
-                return "—"
-            cap = getattr(bundle, "phi_Rn", None) or getattr(bundle, "capacity", None)
-            if cap is None:
-                return "—"
-            return f"{cap/1000:.1f} kN" if "n" not in attr else f"{cap/1e6:.1f} kN·m"
-
         comp_cap = "—"
         flex_cap = "—"
         shear_cap = "—"
@@ -620,8 +626,10 @@ th {{background:#F5F5F5; font-size:11px;}}
         try:
             from steeldesigner.sap2000.sap2000_oapi import Sap2000Connector
             if self._sap_connector is None:
-                progid = self._progid_combo.currentText().split()[0]
-                self._sap_connector = Sap2000Connector(progid)
+                progid_text = self._progid_combo.currentText()
+                use_fake = "fake" in progid_text.lower() or "test" in progid_text.lower()
+                progid = None if use_fake else progid_text.split()[0]
+                self._sap_connector = Sap2000Connector(use_fake=use_fake, progid=progid)
                 self._sap_connector.connect()
                 self._btn_sap_connect.setText("Desconectar")
                 self._sap_status.set_status("ok", "Conectado")
