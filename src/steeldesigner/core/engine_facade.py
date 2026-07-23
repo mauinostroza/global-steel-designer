@@ -28,6 +28,7 @@ from steeldesigner.core.aisc360_engine import (
     DesignMethod, Strictness,
 )
 from steeldesigner.core.aisc360_master_engine import MasterEngineV2
+from steeldesigner.core.section_geometry import apply_to_section
 from steeldesigner.core.angle_compression import check_angle
 from steeldesigner.core.torsion_chapter_h3 import ChapterH3, TorsionResult
 from steeldesigner.core.aisc360_engine import (
@@ -127,6 +128,7 @@ class EngineFacade:
     """Router principal: recibe una Section + DesignInputs y devuelve DesignResult."""
 
     def run(self, section: Section, inputs: DesignInputs) -> DesignResult:
+        apply_to_section(section)
         ftype = family_type(section)
         name = section.designation_modern or section.designation_legacy or "?"
 
