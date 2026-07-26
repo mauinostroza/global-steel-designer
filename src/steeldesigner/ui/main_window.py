@@ -5,8 +5,9 @@ Páginas:
   0 — Catálogo de secciones
   1 — Diseño AISC 360-22
   2 — Historial / resultados
+  3 — Selector de perfiles (ranking auto-diseño)
 
-Ctrl+1/2/3 navegan entre páginas.
+Ctrl+1/2/3/4 navegan entre páginas.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from steeldesigner.ui.theme import BRAND, BG_SURFACE, TEXT_PRIMARY, TEXT_SECONDA
 from steeldesigner.ui.pages.catalogue_page import CataloguePage
 from steeldesigner.ui.pages.design_page import DesignPage
 from steeldesigner.ui.pages.results_page import ResultsPage
+from steeldesigner.ui.pages.selector_page import SelectorPage
 
 
 class MainWindow(QMainWindow):
@@ -72,6 +74,7 @@ class MainWindow(QMainWindow):
         self._act_catalogue = self._nav_action(tb, "Catálogo", "Ctrl+1", 0)
         self._act_design = self._nav_action(tb, "Diseño", "Ctrl+2", 1)
         self._act_results = self._nav_action(tb, "Resultados", "Ctrl+3", 2)
+        self._act_selector = self._nav_action(tb, "Selector", "Ctrl+4", 3)
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -108,6 +111,10 @@ class MainWindow(QMainWindow):
         self._results_page = ResultsPage()
         self._stack.addWidget(self._results_page)
 
+        self._selector_page = SelectorPage(self._catalog)
+        self._selector_page.section_selected.connect(self._open_in_design)
+        self._stack.addWidget(self._selector_page)
+
     # ── status bar ───────────────────────────────────────────────────────────
 
     def _build_statusbar(self):
@@ -121,7 +128,7 @@ class MainWindow(QMainWindow):
 
     def _switch(self, idx: int):
         self._stack.setCurrentIndex(idx)
-        for i, act in enumerate([self._act_catalogue, self._act_design, self._act_results]):
+        for i, act in enumerate([self._act_catalogue, self._act_design, self._act_results, self._act_selector]):
             act.setChecked(i == idx)
 
     def _open_in_design(self, section):
