@@ -21,6 +21,7 @@ from steeldesigner.ui.theme import (
     BRAND, BG_SURFACE, BG_CARD, TEXT_PRIMARY, TEXT_SECONDARY, BORDER,
 )
 from steeldesigner.ui.widgets.section_canvas import SectionCanvas
+from steeldesigner.ui.widgets.compare_dialog import CompareDialog
 
 
 _FAMILIES = [
@@ -103,6 +104,11 @@ class CataloguePage(QWidget):
             f"QPushButton:hover {{ background:#0051A8; }}"
         )
         lv.addWidget(self._open_btn)
+
+        self._compare_btn = QPushButton("Comparar seleccionados (2-4)")
+        self._compare_btn.setEnabled(False)
+        self._compare_btn.clicked.connect(self._open_compare)
+        lv.addWidget(self._compare_btn)
         lv.addStretch()
         splitter.addWidget(left)
 
@@ -116,6 +122,7 @@ class CataloguePage(QWidget):
         for i in range(1, len(_COLS)):
             self._table.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
         self._table.verticalHeader().setVisible(False)
@@ -205,6 +212,7 @@ class CataloguePage(QWidget):
 
     def _on_selection(self):
         rows = self._table.selectionModel().selectedRows()
+        self._compare_btn.setEnabled(2 <= len(rows) <= 4)
         if not rows:
             self._open_btn.setEnabled(False)
             return
@@ -214,7 +222,19 @@ class CataloguePage(QWidget):
         sec = item.data(Qt.UserRole)
         self._canvas.set_section(sec)
         self._show_props(sec)
-        self._open_btn.setEnabled(True)
+        self._open_btn.setEnabled(len(rows) == 1)
+
+    def _open_compare(self):
+        rows = self._table.selectionModel().selectedRows()
+        sections = []
+        for idx in rows:
+            item = self._table.item(idx.row(), 0)
+            if item:
+                sections.append(item.data(Qt.UserRole))
+        if not (2 <= len(sections) <= 4):
+            return
+        dlg = CompareDialog(sections, parent=self)
+        dlg.exec()
 
     def _on_double_click(self, index):
         item = self._table.item(index.row(), 0)
