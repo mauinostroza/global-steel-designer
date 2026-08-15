@@ -252,6 +252,8 @@ class DesignPage(QWidget):
         cbf.addRow(self._chk_stem_tension)
         self._chk_stiffeners = QCheckBox("Rigidizadores transversales (§G2)")
         cbf.addRow(self._chk_stiffeners)
+        self._spin_stiff_spacing = self._spin(0, 100000, 0, " mm")
+        cbf.addRow("Separación 'a':", self._spin_stiff_spacing)
         self._chk_tension_field = QCheckBox("Campo de tracción permitido (§G3)")
         cbf.addRow(self._chk_tension_field)
         lv.addWidget(cb_grp)
@@ -455,6 +457,7 @@ class DesignPage(QWidget):
             stem_in_tension=self._chk_stem_tension.isChecked(),
             stiffeners=self._chk_stiffeners.isChecked(),
             tension_field=self._chk_tension_field.isChecked(),
+            stiffener_spacing=self._spin_stiff_spacing.value(),
             method=method,
         )
 

@@ -32,7 +32,8 @@ from steeldesigner.core.section_geometry import apply_to_section
 from steeldesigner.core.angle_compression import check_angle
 from steeldesigner.core.torsion_chapter_h3 import ChapterH3, TorsionResult
 from steeldesigner.core.aisc360_engine import (
-    LimitStateResult, CheckBundle, Factors,
+    LimitStateResult, CheckBundle, Factors, ChapterE, ChapterD,
+    _eff_width_stiffened,
 )
 from math import sqrt, pi
 
@@ -82,6 +83,7 @@ class DesignInputs:
     # Cortante
     stiffeners: bool = False
     tension_field: bool = False
+    stiffener_spacing: float = 0.0  # mm ("a" en §G2/§G3)
 
     # Conexión (tracción efectiva)
     U: float = 1.0
@@ -186,6 +188,7 @@ class EngineFacade:
 
     def _shear_input(self, inp: DesignInputs) -> ShearInput:
         return ShearInput(
+            a=inp.stiffener_spacing,
             stiffeners_present=inp.stiffeners,
             tension_field_action=inp.tension_field,
         )
@@ -294,7 +297,6 @@ class EngineFacade:
             method=self._method_enum(inp),
             strictness=self._strictness(inp),
             flexure_input=self._flex_input(inp),
-            shear_input=self._shear_input(inp),
             effective_area=self._eff_area(inp),
             block_shear_input=self._block_shear(inp),
         )
@@ -519,45 +521,81 @@ class EngineFacade:
         ))
         return b
 
+    @staticmethod
+    def _hss_rect_ae(sec: Section, Fy: float, E: float, Fcr: float) -> tuple:
+        """§E7.1 — área efectiva de HSS rectangular (paredes rigidizadas, Table B4.1a caso 6)."""
+        D = max(_safe(sec.d), 1e-6)
+        B = max(_safe(sec.bf), 1e-6)
+        t = max(_safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des", None)) or _safe(getattr(sec, "t_nom", None)), 1e-6)
+        Ag = max(_safe(sec.area_mm2), 1e-6)
+        lam_r = 1.40 * sqrt(E / Fy)
+        b_flat = B - 3.0 * t
+        h_flat = D - 3.0 * t
+        be_b, slender_b = _eff_width_stiffened(b_flat, t, Fy, E, Fcr, lam_r)
+        be_h, slender_h = _eff_width_stiffened(h_flat, t, Fy, E, Fcr, lam_r)
+        Ae = Ag
+        note = {}
+        if slender_b:
+            Ae -= 2.0 * (b_flat - be_b) * t
+            note["wall_B_slender"] = True
+        if slender_h:
+            Ae -= 2.0 * (h_flat - be_h) * t
+            note["wall_D_slender"] = True
+        return max(Ae, 1e-6), note
+
+    @staticmethod
+    def _hss_circ_ae(sec: Section, Fy: float, E: float) -> tuple:
+        """§E7.2 — área efectiva de HSS circular: Ae = Q·Ag según D/t."""
+        D = max(_safe(sec.d), 1e-6)
+        t = max(_safe(sec.tf) or _safe(sec.tw) or _safe(getattr(sec, "t_des", None)) or _safe(getattr(sec, "t_nom", None)), 1e-6)
+        Ag = max(_safe(sec.area_mm2), 1e-6)
+        D_t = D / t
+        if D_t <= 0.11 * E / Fy:
+            Q = 1.0
+        elif D_t <= 0.45 * E / Fy:
+            Q = (0.038 * E) / (Fy * D_t) + 2.0 / 3.0
+        else:
+            Q = (0.038 * E) / (Fy * D_t) + 2.0 / 3.0  # fuera de límite §E7.2; conservador
+        Q = min(Q, 1.0)
+        note = {"Q_E7_2": Q, "D_t": D_t} if Q < 1.0 else {}
+        return max(Q * Ag, 1e-6), note
+
+    def _hss_compression(self, sec: Section, isec, inp: DesignInputs, ae_fn) -> CheckBundle:
+        """Compresión HSS §E3 + §E7: pandeo flexural con reducción de área por pared esbelta."""
+        mat = self._material(inp)
+        lengths = self._lengths(inp)
+        c = CheckBundle(name="Compression")
+        c.results.append(ChapterE.flexural_buckling(
+            isec.area, isec.rx, isec.ry, mat, lengths, self._method_enum(inp), inp.Pu, ae_fn=ae_fn,
+        ))
+        return c
+
     def _run_hss_rect(self, sec: Section, inp: DesignInputs, name: str) -> DesignResult:
         """HSS rectangular: §E7 compresión + §F7 flexión + §G4 cortante + §H3.1 torsión."""
-        # Compresión §E7 via motor I-shape (misma formulación columna)
         isec = to_isection(sec)
-        engine = MasterEngineV2(mode=inp.engine_mode)
-        member = IShapeMember(
-            section=isec,
-            material=self._material(inp),
-            lengths=self._lengths(inp),
-            method=self._method_enum(inp),
-            strictness=self._strictness(inp),
-            flexure_input=self._flex_input(inp),
-            shear_input=self._shear_input(inp),
-            effective_area=self._eff_area(inp),
-        )
-        raw = engine.run_i_shape_member(member, self._demand(inp))
+        t_result = ChapterD.run(isec.area, self._material(inp), self._method_enum(inp),
+                                 self._eff_area(inp), self._block_shear(inp), inp.Tu_axial)
+        comp = self._hss_compression(sec, isec, inp, lambda Fcr: self._hss_rect_ae(sec, inp.Fy, inp.E, Fcr))
 
         # §F7 y §G4 reemplazan los resultados de flexión/cortante del motor I
         flexure = self._hss_rect_flexure(sec, inp.Fy, inp.E, inp.Mux, inp.method)
         shear = self._hss_rect_shear(sec, inp.Fy, inp.E, inp.Vux, inp.method)
 
-        # Recalcular interacción §H1-1 con los valores correctos §F7/§G4
-        comp = raw.get("compression")
-        phi_Pc = getattr(comp, "controlling", None)
-        phi_Pc = phi_Pc.design_strength if phi_Pc else 0.0
+        # Recalcular interacción §H1-1 con los valores correctos §E7/§F7
+        phi_Pc = comp.controlling.design_strength if comp.controlling else 0.0
         phi_Mcx = flexure.controlling.design_strength if flexure.controlling else 0.0
         from steeldesigner.core.aisc360_engine import ChapterH
         ir = ChapterH.h1_1(inp.Pu, phi_Pc, inp.Mux, phi_Mcx) if (phi_Pc or phi_Mcx) else 0.0
 
         result = DesignResult(
             section_name=name, family_type="hss_rect", method=inp.method,
-            tension=raw.get("tension"),
+            tension=t_result,
             compression=comp,
             flexure_major=flexure,
             shear=shear,
             interaction_ratio=ir,
             passes_interaction=ir <= 1.0,
-            geometry_source=raw.get("geometry_source", {}),
-            audit_report=raw.get("audit_report"),
+            geometry_source={},
         )
 
         if inp.Tu_torsion > 0:
@@ -573,40 +611,28 @@ class EngineFacade:
     def _run_hss_circ(self, sec: Section, inp: DesignInputs, name: str) -> DesignResult:
         """HSS circular: §E7 compresión + §F8 flexión + §G6 cortante + §H3.1 torsión."""
         isec = to_isection(sec)
-        engine = MasterEngineV2(mode=inp.engine_mode)
-        member = IShapeMember(
-            section=isec,
-            material=self._material(inp),
-            lengths=self._lengths(inp),
-            method=self._method_enum(inp),
-            strictness=self._strictness(inp),
-            flexure_input=self._flex_input(inp),
-            shear_input=self._shear_input(inp),
-            effective_area=self._eff_area(inp),
-        )
-        raw = engine.run_i_shape_member(member, self._demand(inp))
+        t_result = ChapterD.run(isec.area, self._material(inp), self._method_enum(inp),
+                                 self._eff_area(inp), self._block_shear(inp), inp.Tu_axial)
+        comp = self._hss_compression(sec, isec, inp, lambda Fcr: self._hss_circ_ae(sec, inp.Fy, inp.E))
 
         # §F8 y §G6 reemplazan los resultados de flexión/cortante del motor I
         flexure = self._hss_circ_flexure(sec, inp.Fy, inp.E, inp.Mux, inp.method)
         shear = self._hss_circ_shear(sec, inp.Fy, inp.E, inp.Vux, inp.method)
 
-        comp = raw.get("compression")
-        phi_Pc = getattr(comp, "controlling", None)
-        phi_Pc = phi_Pc.design_strength if phi_Pc else 0.0
+        phi_Pc = comp.controlling.design_strength if comp.controlling else 0.0
         phi_Mcx = flexure.controlling.design_strength if flexure.controlling else 0.0
         from steeldesigner.core.aisc360_engine import ChapterH
         ir = ChapterH.h1_1(inp.Pu, phi_Pc, inp.Mux, phi_Mcx) if (phi_Pc or phi_Mcx) else 0.0
 
         result = DesignResult(
             section_name=name, family_type="hss_circ", method=inp.method,
-            tension=raw.get("tension"),
+            tension=t_result,
             compression=comp,
             flexure_major=flexure,
             shear=shear,
             interaction_ratio=ir,
             passes_interaction=ir <= 1.0,
-            geometry_source=raw.get("geometry_source", {}),
-            audit_report=raw.get("audit_report"),
+            geometry_source={},
         )
 
         if inp.Tu_torsion > 0:
