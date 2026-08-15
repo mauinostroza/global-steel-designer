@@ -431,26 +431,78 @@ class ChapterF:
         s=p*Mn/o
         return LimitStateResult("F",eq,"Major-axis flexure, channel (LTB approx.)",Mn,s,p,o,demand,abs(demand)/s if s>0 else 0.0,{"source":geom.get("source"),"reliability":"GEOMETRIC_IDEALIZED","Lp":Lp,"Lr":Lr})
     @staticmethod
-    def angle_flexure(sec, mat, method, strictness, geom, flex, demand_x=0.0, demand_y=0.0):
+    def angle_flexure(sec, mat, lengths, method, strictness, geom, flex, demand_x=0.0, demand_y=0.0):
+        """§F10 flexión de ángulo simple respecto a ejes geométricos (sin arriostramiento
+        continuo asumido, conservador). F10-1 fluencia, F10-2/F10-3 LTB, F10-6 pierna esbelta."""
         b=CheckBundle(name="Flexure")
         if strictness==Strictness.STRICT:
             b.results.append(LimitStateResult("F","BLOCKED_ANGLE_FLEXURE","Angle exact flexure requires principal-axis/tabulated data in strict mode",0.0,0.0,demand=demand_x,ratio=float("inf") if abs(demand_x)>0 else 0.0,metadata={"blocking":True}))
             return b
         p,o=Factors.phi_omega(method,"flexure")
-        Mnx=mat.Fy*max(sec.Zx if sec.Zx>0 else sec.Sx,1e-9)
-        Mny=mat.Fy*max(sec.Zy if sec.Zy>0 else sec.Sy,1e-9)
-        sx=p*Mnx/o; sy=p*Mny/o
-        b.results.append(LimitStateResult("F","ANGLE_X","Angle flexure x-like",Mnx,sx,p,o,demand_x,abs(demand_x)/sx if sx>0 else 0.0,{"source":geom.get("source")}))
-        b.results.append(LimitStateResult("F","ANGLE_Y","Angle flexure y-like",Mny,sy,p,o,demand_y,abs(demand_y)/sy if sy>0 else 0.0,{"source":geom.get("source")}))
+        Lb=max(lengths.Lb,0.0)
+        Cb=max(flex.Cb,1.0)
+        b_leg=max(sec.d,sec.b,1e-9); t_leg=max(sec.t,1e-9)
+        b4=sec.b4(mat)
+        leg=b4.element("long_leg")
+        for axis,Sc,name in (
+            ("x",max(sec.Sx,1e-9),"ANGLE_X"),
+            ("y",max(sec.Sy,1e-9),"ANGLE_Y"),
+        ):
+            My=1.5*mat.Fy*Sc  # F10-1: fluencia respecto a eje geométrico, con tope 1.5·Fy·Sc
+            Mn=My; eq="F10-1"
+            if Lb>0 and t_leg>0:
+                # F10-4/F10-5 (aproximación para ala igual, sin arriostramiento continuo,
+                # Design Guide/Commentary): Me = 0.46·E·b²·t²·Cb / Lb.
+                Me=0.46*mat.E*(b_leg**2)*(t_leg**2)*Cb/Lb
+                if Me<=My:
+                    Mn=(0.92-0.17*Me/My)*Me; eq="F10-3"
+                else:
+                    Mn=min(1.5*My,(1.92-1.17*sqrt(My/Me))*My); eq="F10-2"
+                Mn=max(Mn,0.0)
+            if leg and leg.section_class==SectionClass.SLENDER:
+                # F10-6: reducción por pierna esbelta en compresión.
+                lam_r=0.91*sqrt(mat.E/mat.Fy)
+                Fcr_leg=(0.53*mat.E)/max(leg.lambda_value**2,1e-9) if leg.lambda_value>lam_r else mat.Fy
+                Mn=min(Mn,Fcr_leg*Sc)
+            Mn=max(min(Mn,My),0.0)
+            s=p*Mn/o
+            demand=demand_x if axis=="x" else demand_y
+            b.results.append(LimitStateResult("F",eq,f"Angle flexure {axis}-geometric",Mn,s,p,o,demand,abs(demand)/s if s>0 else 0.0,{"source":geom.get("source"),"reliability":"GEOMETRIC_IDEALIZED"}))
         return b
     @staticmethod
-    def tee_flexure(sec, mat, method, strictness, geom, flex, demand=0.0):
+    def tee_flexure(sec, mat, lengths, method, strictness, geom, flex, demand=0.0):
+        """§F9 flexión de tee. Vástago en tracción: F9-1 (Mp topado en 1.6·Fy·Sx).
+        Vástago en compresión: LTB F9-4/F9-5. Reducción local por B4Classifier."""
         if strictness==Strictness.STRICT and geom.get("reliability") != PropertyReliability.TABULATED:
             return LimitStateResult("F","BLOCKED_TEE_FLEXURE","Tee exact flexure requires tabulated/principal-axis data in strict mode",0.0,0.0,demand=demand,ratio=float("inf") if abs(demand)>0 else 0.0,metadata={"blocking":True})
         p,o=Factors.phi_omega(method,"flexure")
-        Mn=mat.Fy*max(sec.Zx if sec.Zx>0 else sec.Sx,1e-9)
+        Sx=max(sec.Sx,1e-9); Zx=max(sec.Zx if sec.Zx>0 else sec.Sx,1e-9); Iy=max(sec.Iy,1e-9)
+        J=max(geom.get("J") or 1e-9,1e-9); d=max(sec.d,1e-9)
+        Lb=max(lengths.Lb,0.0)
+        Mp=mat.Fy*Zx
+        if flex.stem_in_tension:
+            Mn=min(Mp,1.6*mat.Fy*Sx); eq="F9-1"
+        else:
+            if Lb>0:
+                B=-2.3*(d/Lb)*sqrt(Iy/J)  # ala en compresión (vástago abajo en compresión)
+                Mcr=(1.95*mat.E/Lb)*sqrt(Iy*J)*(B+sqrt(1.0+B**2))
+                Mn=min(Mp,abs(Mcr)); eq="F9-4/F9-5"
+            else:
+                Mn=Mp; eq="F9_NO_LB"
+        b4=sec.b4_flexure(mat)
+        flange=b4.element("flange_flexure"); stem=b4.element("stem_flexure")
+        if flange and flange.section_class==SectionClass.NONCOMPACT:
+            Mn=min(Mn,Mp-(Mp-0.7*mat.Fy*Sx)*((flange.lambda_value-(flange.lambda_p or 0))/max((flange.lambda_r or 0)-(flange.lambda_p or 0),1e-9)))
+        elif flange and flange.section_class==SectionClass.SLENDER:
+            kc=max(0.35,min(4.0/sqrt(max(stem.lambda_value if stem else 1.0,1e-9)),0.76))
+            Mn=min(Mn,0.9*mat.E*kc*Sx/max(flange.lambda_value**2,1e-9))
+        if stem and stem.section_class!=SectionClass.COMPACT and not flex.stem_in_tension:
+            # F9-9/F9-10: pandeo local del vástago solo gobierna con vástago en compresión.
+            Fcr_stem=0.69*mat.E/max(stem.lambda_value**2,1e-9)
+            Mn=min(Mn,Fcr_stem*Sx)
+        Mn=max(Mn,0.0)
         s=p*Mn/o
-        return LimitStateResult("F","TEE_B4_WARPING","Tee flexure",Mn,s,p,o,demand,abs(demand)/s if s>0 else 0.0,{"source":geom.get("source"),"stem_in_tension":flex.stem_in_tension})
+        return LimitStateResult("F",eq,"Tee flexure",Mn,s,p,o,demand,abs(demand)/s if s>0 else 0.0,{"source":geom.get("source"),"stem_in_tension":flex.stem_in_tension})
 
 class ChapterG:
     @staticmethod
@@ -601,7 +653,7 @@ class AngleMember:
         c.results.append(ChapterE.flexural_buckling(self.section.area,self.section.rx,self.section.ry,self.material,self.lengths,self.method,d.Pu))
         b=ChapterE.exactness_gate_non_i("angle",g,self.strictness,d.Pu)
         if b: c.results.append(b)
-        f=ChapterF.angle_flexure(self.section,self.material,self.method,self.strictness,g,self.flexure_input,d.Mux,d.Muy)
+        f=ChapterF.angle_flexure(self.section,self.material,self.lengths,self.method,self.strictness,g,self.flexure_input,d.Mux,d.Muy)
         phi=0.90 if self.method==DesignMethod.LRFD else 1.0
         om=1.0 if self.method==DesignMethod.LRFD else 1.67
         ds=phi*0.6*self.material.Fy*self.section.t*max(self.section.d,self.section.b)/om
@@ -629,7 +681,7 @@ class TeeMember:
         c.results.append(ChapterE.flexural_buckling(self.section.area,self.section.rx,self.section.ry,self.material,self.lengths,self.method,d.Pu))
         b=ChapterE.exactness_gate_non_i("tee",g,self.strictness,d.Pu)
         if b: c.results.append(b)
-        f=CheckBundle(name="Flexure",results=[ChapterF.tee_flexure(self.section,self.material,self.method,self.strictness,g,self.flexure_input,d.Mux)])
+        f=CheckBundle(name="Flexure",results=[ChapterF.tee_flexure(self.section,self.material,self.lengths,self.method,self.strictness,g,self.flexure_input,d.Mux)])
         phi=0.90 if self.method==DesignMethod.LRFD else 1.0
         om=1.0 if self.method==DesignMethod.LRFD else 1.67
         ds=phi*0.6*self.material.Fy*self.section.tw*self.section.stem_height/om
