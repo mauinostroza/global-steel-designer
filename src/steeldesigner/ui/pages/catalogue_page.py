@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
 
+from steeldesigner.core.section_geometry import apply_to_section
 from steeldesigner.ui.theme import (
     BRAND, BG_SURFACE, BG_CARD, TEXT_PRIMARY, TEXT_SECONDARY, BORDER,
 )
@@ -178,6 +179,7 @@ class CataloguePage(QWidget):
     def _populate_table(self, sections):
         self._table.setRowCount(0)
         for sec in sections:
+            apply_to_section(sec)
             row = self._table.rowCount()
             self._table.insertRow(row)
             fam_code = sec.family.family_code if sec.family else ""
